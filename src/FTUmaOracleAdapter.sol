@@ -135,7 +135,7 @@ contract FTUmaOracleAdapter is IOptimisticOracleV3Callbacks, Ownable, Reentrancy
         bondToken.forceApprove(address(oracleV3), defaultBond);
 
         // assert on UMA — asserter is the proposer (receives bond back directly)
-        bytes memory claim = _buildClaim(questionId, answer);
+        bytes memory claim = _buildClaim(questionId, answer, msg.sender);
 
         assertionId = oracleV3.assertTruth(
             claim,
@@ -293,14 +293,45 @@ contract FTUmaOracleAdapter is IOptimisticOracleV3Callbacks, Ownable, Reentrancy
         if (pausedQuestions[questionId]) revert QuestionPausedForResolution();
     }
 
-    function _buildClaim(bytes32 questionId, uint256 answer) internal pure returns (bytes memory) {
+    /// @dev Builds a human-readable claim string for UMA DVM voters to verify during disputes.
+    /// Follows UMA best practices (see DataAsserter example): self-contained, includes contract
+    /// address, timestamp, asserter, and decoded bitmask so voters can independently verify
+    /// without needing external context. Binary representation included because raw bitmask
+    /// values (e.g. "3") are not intuitive — "binary: 11" makes winning outcomes immediately clear.
+    function _buildClaim(bytes32 questionId, uint256 answer, address asserter) internal view returns (bytes memory) {
         return abi.encodePacked(
             "FortyTwo market resolution. questionId: ",
             Strings.toHexString(uint256(questionId), 32),
-            ", answer: ",
+            ", answer bitmask: ",
             Strings.toString(answer),
-            ". Answer is a bitmask where bit i set means outcome i won."
+            " (binary: ",
+            _toBinaryString(answer),
+            "), resolved by asserter: ",
+            Strings.toHexString(asserter),
+            ", at timestamp: ",
+            Strings.toString(block.timestamp),
+            ", via adapter contract: ",
+            Strings.toHexString(address(this)),
+            ". Bit i set in bitmask means outcome i won."
         );
+    }
+
+    function _toBinaryString(uint256 value) internal pure returns (string memory) {
+        if (value == 0) return "0";
+
+        // find highest set bit
+        uint256 temp = value;
+        uint256 length;
+        while (temp > 0) {
+            length++;
+            temp >>= 1;
+        }
+
+        bytes memory result = new bytes(length);
+        for (uint256 i = 0; i < length; i++) {
+            result[length - 1 - i] = (value & (1 << i)) != 0 ? bytes1("1") : bytes1("0");
+        }
+        return string(result);
     }
 
     function hasPendingProposal(bytes32 questionId) external view returns (bool) {
