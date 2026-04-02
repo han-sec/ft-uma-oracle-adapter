@@ -1,4 +1,4 @@
-# UMA Oracle Adapter
+# FT UMA Oracle Adapter
 
 > **Disclaimer:** This is an independent implementation for learning purposes. It is not affiliated with or endorsed by the FortyTwo protocol team. This codebase has been reviewed using Pashov AI auditor but has not gone through a manual security review. Do not use in production without a proper audit.
 
