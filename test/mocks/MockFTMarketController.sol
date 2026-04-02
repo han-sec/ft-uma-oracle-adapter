@@ -24,11 +24,7 @@ contract MockFTMarketController is IFTMarketController {
     /// @notice Create a mock question for testing
     function createMockQuestion(bytes32 questionId, uint256 numOutcomes, uint128 timestampEnd) external {
         questions[questionId] = QuestionState({
-            numOutcomes: numOutcomes,
-            timestampEnd: timestampEnd,
-            answer: 0,
-            finalised: false,
-            exists: true
+            numOutcomes: numOutcomes, timestampEnd: timestampEnd, answer: 0, finalised: false, exists: true
         });
     }
 
