@@ -21,23 +21,27 @@ controller.grantRole(QUESTION_FINALISER_ROLE, address(adapter));
 
 ![Contract Architecture](./docs/diagrams/architecture.png)
 
-The Adapter holds `QUESTION_RESOLVER_ROLE` and `QUESTION_FINALISER_ROLE` on FortyTwo's `FTMarketController`. It fetches resolution data from UMA's Optimistic Oracle V3 and resolves the market based on said resolution data.
+The Adapter holds `QUESTION_RESOLVER_ROLE` and `QUESTION_FINALISER_ROLE` on FortyTwo's `FTMarketController`. It supports two resolution paths:
+
+### Primary: UMA Oracle Resolution
 
 When a market expires, anyone can `proposeAnswer` on the Adapter:
 
 1. The proposed answer and bond are forwarded to UMA via `assertTruth`
 2. The assertion's parameters (questionId, answer, proposer) are stored onchain
-3. Bond is returned directly to the proposer by UMA on truthful settlement
+3. If undisputed after the liveness period (default: 2 hours), anyone calls `settleAssertion` on UMA
+4. UMA calls `assertionResolvedCallback` on the Adapter, which resolves and finalises the market
+5. Bond is returned directly to the proposer by UMA
 
-UMA Proposers post a bond alongside their assertion. If the assertion is not disputed, it settles as truthful after a defined liveness period (default: 2 hours).
+If disputed, the Adapter clears the pending proposal so new proposals can be submitted while UMA's [DVM](https://docs.uma.xyz/protocol-overview/dvm-2.0) votes (48-72 hours).
 
-When the assertion is disputed, the Adapter clears the pending proposal so the market is not stuck during UMA's [DVM](https://docs.uma.xyz/protocol-overview/dvm-2.0) resolution (48-72 hour vote). New proposals can be submitted while the DVM is voting.
+### Fallback: Admin Emergency Resolution
 
-After an assertion settles, UMA calls `assertionResolvedCallback` on the Adapter, which resolves and finalises the outcome on the `FTMarketController`.
+When UMA is unavailable or produces a wrong result:
 
-### Emergency Resolution
-
-An admin can `flag` a market for manual resolution. This pauses UMA-based resolution and starts a 1-hour safety period. After the safety period, the admin can call `emergencyResolve` to resolve the market directly.
+1. Admin calls `flag` — pauses UMA resolution, starts a 1-hour safety period
+2. Community can observe the flag on-chain
+3. After the safety period, admin calls `emergencyResolve` to resolve directly on the controller
 
 ## Docs
 
