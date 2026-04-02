@@ -3,7 +3,7 @@ pragma solidity ^0.8.26;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IOptimisticOracleV3, IOptimisticOracleV3Callbacks} from "./interfaces/IOptimisticOracleV3.sol";
@@ -12,13 +12,13 @@ import {IFTMarketController} from "./interfaces/IFTMarketController.sol";
 /**
  * @title FTUmaOracleAdapter
  * @notice Resolves FortyTwo prediction markets via UMA's Optimistic Oracle V3.
- * Holds QUESTION_RESOLVER_ROLE and QUESTION_FINALISER_ROLE on the controller.
+ * Holds QUESTION_RESOLVER_ROLE and QUESTION_FINALISER_ROLE on the CONTROLLER.
  * @dev Adapter pattern: a translator between UMA and FTMarketController.
  * Stores only translation mappings (assertionId <-> questionId). Bond, liveness,
  * and dispute state are managed by UMA. Bond is returned directly to the proposer
  * by UMA on settlement — the adapter never holds or returns bond tokens.
  */
-contract FTUmaOracleAdapter is IOptimisticOracleV3Callbacks, Ownable, ReentrancyGuard {
+contract FTUmaOracleAdapter is IOptimisticOracleV3Callbacks, Ownable2Step, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     struct AssertionData {
@@ -27,9 +27,9 @@ contract FTUmaOracleAdapter is IOptimisticOracleV3Callbacks, Ownable, Reentrancy
         address proposer;
     }
 
-    IOptimisticOracleV3 public immutable oracleV3;
-    IFTMarketController public immutable controller;
-    IERC20 public immutable bondToken;
+    IOptimisticOracleV3 public immutable ORACLE_V3;
+    IFTMarketController public immutable CONTROLLER;
+    IERC20 public immutable BOND_TOKEN;
 
     // ASSERT_TRUTH2 identifier — ASSERT_TRUTH is deprecated and reverts
     bytes32 public constant ASSERT_TRUTH_IDENTIFIER = "ASSERT_TRUTH2";
@@ -56,7 +56,7 @@ contract FTUmaOracleAdapter is IOptimisticOracleV3Callbacks, Ownable, Reentrancy
     // emitted when a proposer submits an answer via proposeAnswer()
     event AnswerProposed(bytes32 indexed questionId, bytes32 indexed assertionId, uint256 answer, address proposer);
 
-    // emitted when UMA callback resolves a market on the controller
+    // emitted when UMA callback resolves a market on the CONTROLLER
     event QuestionResolved(bytes32 indexed questionId, bytes32 indexed assertionId, uint256 answer);
 
     // emitted when someone disputes an assertion on UMA
@@ -100,7 +100,7 @@ contract FTUmaOracleAdapter is IOptimisticOracleV3Callbacks, Ownable, Reentrancy
     error InvalidLiveness();
 
     modifier onlyOracle() {
-        if (msg.sender != address(oracleV3)) revert NotOracle();
+        if (msg.sender != address(ORACLE_V3)) revert NotOracle();
         _;
     }
 
@@ -111,16 +111,16 @@ contract FTUmaOracleAdapter is IOptimisticOracleV3Callbacks, Ownable, Reentrancy
         uint256 _defaultBond,
         uint64 _defaultLiveness
     ) Ownable(msg.sender) {
-        oracleV3 = IOptimisticOracleV3(_oracleV3);
-        controller = IFTMarketController(_controller);
-        bondToken = IERC20(_bondToken);
+        ORACLE_V3 = IOptimisticOracleV3(_oracleV3);
+        CONTROLLER = IFTMarketController(_controller);
+        BOND_TOKEN = IERC20(_bondToken);
         defaultBond = _defaultBond;
         defaultLiveness = _defaultLiveness;
     }
 
     /**
      * @notice Propose an answer for a question. Permissionless — bond is the gatekeeper.
-     * @dev Caller must have approved bondToken to this contract.
+     * @dev Caller must have approved BOND_TOKEN to this contract.
      * Bond is pulled through the adapter to UMA, but the asserter is set to msg.sender.
      * UMA returns the bond directly to the proposer on truthful settlement.
      * @param questionId The FortyTwo question to resolve
@@ -131,19 +131,19 @@ contract FTUmaOracleAdapter is IOptimisticOracleV3Callbacks, Ownable, Reentrancy
         _validateProposal(questionId, answer);
 
         // pull bond from proposer, approve UMA to pull from adapter
-        bondToken.safeTransferFrom(msg.sender, address(this), defaultBond);
-        bondToken.forceApprove(address(oracleV3), defaultBond);
+        BOND_TOKEN.safeTransferFrom(msg.sender, address(this), defaultBond);
+        BOND_TOKEN.forceApprove(address(ORACLE_V3), defaultBond);
 
         // assert on UMA — asserter is the proposer (receives bond back directly)
         bytes memory claim = _buildClaim(questionId, answer, msg.sender);
 
-        assertionId = oracleV3.assertTruth(
+        assertionId = ORACLE_V3.assertTruth(
             claim,
             msg.sender, // asserter: proposer gets bond back directly from UMA
             address(this), // callbackRecipient: adapter receives callbacks
             address(0), // escalationManager: UMA default
             defaultLiveness,
-            bondToken,
+            BOND_TOKEN,
             defaultBond,
             ASSERT_TRUTH_IDENTIFIER,
             bytes32(0)
@@ -158,7 +158,7 @@ contract FTUmaOracleAdapter is IOptimisticOracleV3Callbacks, Ownable, Reentrancy
 
     /**
      * @notice Called by UMA when an assertion settles (liveness expired or dispute resolved).
-     * If truthful and market not yet resolved: resolves + finalises the market on the controller.
+     * If truthful and market not yet resolved: resolves + finalises the market on the CONTROLLER.
      * If not truthful: cleans up, allows re-proposal.
      * If question was paused or already finalised: just cleans up.
      * @dev Bond is returned directly to the proposer by UMA — adapter doesn't handle bond returns.
@@ -174,11 +174,11 @@ contract FTUmaOracleAdapter is IOptimisticOracleV3Callbacks, Ownable, Reentrancy
 
         // resolve the market if truthful, not paused, and not already finalised
         bool shouldResolve =
-            assertedTruthfully && !pausedQuestions[data.questionId] && !controller.isFinalised(data.questionId);
+            assertedTruthfully && !pausedQuestions[data.questionId] && !CONTROLLER.isFinalised(data.questionId);
 
         if (shouldResolve) {
-            controller.resolveOutcome(data.questionId, data.answer);
-            controller.finaliseOutcome(data.questionId, data.answer);
+            CONTROLLER.resolveOutcome(data.questionId, data.answer);
+            CONTROLLER.finaliseOutcome(data.questionId, data.answer);
             emit QuestionResolved(data.questionId, assertionId, data.answer);
         }
 
@@ -214,7 +214,7 @@ contract FTUmaOracleAdapter is IOptimisticOracleV3Callbacks, Ownable, Reentrancy
     function flag(bytes32 questionId) external onlyOwner {
         if (flaggedQuestions[questionId] != 0) revert QuestionAlreadyFlagged();
 
-        if (controller.isFinalised(questionId)) revert QuestionAlreadyFinalised();
+        if (CONTROLLER.isFinalised(questionId)) revert QuestionAlreadyFinalised();
 
         flaggedQuestions[questionId] = block.timestamp + SAFETY_PERIOD;
         pausedQuestions[questionId] = true;
@@ -237,7 +237,7 @@ contract FTUmaOracleAdapter is IOptimisticOracleV3Callbacks, Ownable, Reentrancy
 
     /**
      * @notice Manually resolve a question after safety period has passed.
-     * @dev Validates answer, resolves directly on controller. Any pending UMA assertion
+     * @dev Validates answer, resolves directly on CONTROLLER. Any pending UMA assertion
      * will settle normally — the callback will see isFinalised and skip resolution.
      * Bond is returned directly to the proposer by UMA regardless of emergency resolve.
      */
@@ -245,11 +245,11 @@ contract FTUmaOracleAdapter is IOptimisticOracleV3Callbacks, Ownable, Reentrancy
         if (flaggedQuestions[questionId] == 0) revert QuestionNotFlagged();
         if (block.timestamp < flaggedQuestions[questionId]) revert SafetyPeriodNotPassed();
 
-        uint256 numOutcomes = controller.getNumOutcomes(questionId);
-        if (answer == 0 || answer >= (1 << numOutcomes)) revert InvalidAnswer();
+        uint256 numOutcomes = CONTROLLER.getNumOutcomes(questionId);
+        if (answer == 0 || answer >= (uint256(1) << numOutcomes)) revert InvalidAnswer();
 
-        controller.resolveOutcome(questionId, answer);
-        controller.finaliseOutcome(questionId, answer);
+        CONTROLLER.resolveOutcome(questionId, answer);
+        CONTROLLER.finaliseOutcome(questionId, answer);
 
         delete flaggedQuestions[questionId];
         delete pausedQuestions[questionId];
@@ -280,13 +280,13 @@ contract FTUmaOracleAdapter is IOptimisticOracleV3Callbacks, Ownable, Reentrancy
     }
 
     function _validateProposal(bytes32 questionId, uint256 answer) internal view {
-        uint128 timestampEnd = controller.getOutcomeEnd(questionId);
+        uint128 timestampEnd = CONTROLLER.getOutcomeEnd(questionId);
         if (block.timestamp < timestampEnd) revert QuestionNotExpired();
 
-        if (controller.isFinalised(questionId)) revert QuestionAlreadyFinalised();
+        if (CONTROLLER.isFinalised(questionId)) revert QuestionAlreadyFinalised();
 
-        uint256 numOutcomes = controller.getNumOutcomes(questionId);
-        if (answer == 0 || answer >= (1 << numOutcomes)) revert InvalidAnswer();
+        uint256 numOutcomes = CONTROLLER.getNumOutcomes(questionId);
+        if (answer == 0 || answer >= (uint256(1) << numOutcomes)) revert InvalidAnswer();
 
         if (questionToAssertion[questionId] != bytes32(0)) revert ProposalAlreadyPending();
 
@@ -329,7 +329,8 @@ contract FTUmaOracleAdapter is IOptimisticOracleV3Callbacks, Ownable, Reentrancy
 
         bytes memory result = new bytes(length);
         for (uint256 i = 0; i < length; i++) {
-            result[length - 1 - i] = (value & (1 << i)) != 0 ? bytes1("1") : bytes1("0");
+            // forge-lint: disable-next-line(unsafe-typecast)
+            result[length - 1 - i] = (value & (uint256(1) << i)) != 0 ? bytes1("1") : bytes1("0");
         }
         return string(result);
     }
@@ -342,12 +343,13 @@ contract FTUmaOracleAdapter is IOptimisticOracleV3Callbacks, Ownable, Reentrancy
         return assertions[questionToAssertion[questionId]];
     }
 
+    /// @dev Returns true when UMA liveness has expired and the assertion is unsettled
     function ready(bytes32 questionId) external view returns (bool) {
         bytes32 assertionId = questionToAssertion[questionId];
         if (assertionId == bytes32(0)) return false;
         if (pausedQuestions[questionId]) return false;
 
-        IOptimisticOracleV3.Assertion memory assertion = oracleV3.getAssertion(assertionId);
+        IOptimisticOracleV3.Assertion memory assertion = ORACLE_V3.getAssertion(assertionId);
         return block.timestamp >= assertion.expirationTime && !assertion.settled;
     }
 

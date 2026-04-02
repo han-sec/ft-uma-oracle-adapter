@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 pragma solidity ^0.8.26;
 
-import {Test, console} from "forge-std/Test.sol";
+import {Test} from "forge-std/Test.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {FTUmaOracleAdapter} from "../src/FTUmaOracleAdapter.sol";
 import {MockOptimisticOracleV3} from "./mocks/MockOptimisticOracleV3.sol";
