@@ -40,11 +40,7 @@ contract FTUmaOracleAdapterTest is Test {
         controller = new MockFTMarketController();
 
         adapter = new FTUmaOracleAdapter(
-            address(oracle),
-            address(controller),
-            address(bondToken),
-            DEFAULT_BOND,
-            DEFAULT_LIVENESS
+            address(oracle), address(controller), address(bondToken), DEFAULT_BOND, DEFAULT_LIVENESS
         );
 
         // Create a question: 2 outcomes, expires in 1 day

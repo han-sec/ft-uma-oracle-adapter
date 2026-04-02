@@ -68,8 +68,7 @@ contract MockOptimisticOracleV3 is IOptimisticOracleV3 {
         }
 
         // callback to the adapter (callbackRecipient)
-        IOptimisticOracleV3Callbacks(_callbackRecipients[assertionId])
-            .assertionResolvedCallback(assertionId, truthful);
+        IOptimisticOracleV3Callbacks(_callbackRecipients[assertionId]).assertionResolvedCallback(assertionId, truthful);
     }
 
     /// @notice Simulate a dispute — triggers the disputed callback
@@ -77,8 +76,7 @@ contract MockOptimisticOracleV3 is IOptimisticOracleV3 {
         require(!_assertions[assertionId].settled, "already settled");
         _disputed[assertionId] = true;
 
-        IOptimisticOracleV3Callbacks(_callbackRecipients[assertionId])
-            .assertionDisputedCallback(assertionId);
+        IOptimisticOracleV3Callbacks(_callbackRecipients[assertionId]).assertionDisputedCallback(assertionId);
     }
 
     /// @notice Settle after dispute (DVM resolves) — test helper
@@ -95,8 +93,7 @@ contract MockOptimisticOracleV3 is IOptimisticOracleV3 {
             assertion.currency.safeTransfer(assertion.asserter, assertion.bond);
         }
 
-        IOptimisticOracleV3Callbacks(_callbackRecipients[assertionId])
-            .assertionResolvedCallback(assertionId, truthful);
+        IOptimisticOracleV3Callbacks(_callbackRecipients[assertionId]).assertionResolvedCallback(assertionId, truthful);
     }
 
     function getAssertion(bytes32 assertionId) external view override returns (Assertion memory) {
