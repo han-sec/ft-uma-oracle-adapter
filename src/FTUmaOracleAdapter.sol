@@ -45,11 +45,18 @@ contract FTUmaOracleAdapter is IOptimisticOracleV3Callbacks, Ownable2Step, Reent
     // questionId -> pending assertionId (one at a time)
     mapping(bytes32 => bytes32) public questionToAssertion;
 
-    // questionId -> manual resolution timestamp (non-zero = flagged)
-    mapping(bytes32 => uint256) public flaggedQuestions;
+    enum QuestionStatus {
+        ACTIVE,
+        FLAGGED
+    }
 
-    // questionId -> paused for resolution
-    mapping(bytes32 => bool) public pausedQuestions;
+    struct QuestionState {
+        uint40 flagDeadline; // non-zero = flagged, stores block.timestamp + SAFETY_PERIOD
+        QuestionStatus status; // question status
+    }
+
+    // questionId -> flag state (packed into 1 slot)
+    mapping(bytes32 => QuestionState) public questionState;
 
     ////// EVENTS //////
 
@@ -71,12 +78,6 @@ contract FTUmaOracleAdapter is IOptimisticOracleV3Callbacks, Ownable2Step, Reent
     // emitted when admin cancels a flag before safety period expires
     event QuestionUnflagged(bytes32 indexed questionId);
 
-    // emitted when admin pauses UMA resolution for a question
-    event QuestionPaused(bytes32 indexed questionId);
-
-    // emitted when admin resumes UMA resolution for a question
-    event QuestionUnpaused(bytes32 indexed questionId);
-
     // emitted when admin updates the default bond amount
     event DefaultBondSet(uint256 newBond);
 
@@ -92,7 +93,7 @@ contract FTUmaOracleAdapter is IOptimisticOracleV3Callbacks, Ownable2Step, Reent
     error QuestionNotExpired();
     error QuestionNotFlagged();
     error QuestionAlreadyFlagged();
-    error QuestionPausedForResolution();
+    error QuestionFlaggedForResolution();
     error SafetyPeriodNotPassed();
     error SafetyPeriodAlreadyPassed();
     error UnknownAssertion();
@@ -132,7 +133,7 @@ contract FTUmaOracleAdapter is IOptimisticOracleV3Callbacks, Ownable2Step, Reent
 
         // pull bond from proposer, approve UMA to pull from adapter
         BOND_TOKEN.safeTransferFrom(msg.sender, address(this), defaultBond);
-        BOND_TOKEN.forceApprove(address(ORACLE_V3), defaultBond);
+        BOND_TOKEN.forceApprove(address(ORACLE_V3), defaultBond); // reset to 0 first and approve again
 
         // assert on UMA — asserter is the proposer (receives bond back directly)
         bytes memory claim = _buildClaim(questionId, answer, msg.sender);
@@ -151,6 +152,7 @@ contract FTUmaOracleAdapter is IOptimisticOracleV3Callbacks, Ownable2Step, Reent
 
         // store translation mapping
         assertions[assertionId] = AssertionData({questionId: questionId, answer: answer, proposer: msg.sender});
+
         questionToAssertion[questionId] = assertionId;
 
         emit AnswerProposed(questionId, assertionId, answer, msg.sender);
@@ -160,7 +162,7 @@ contract FTUmaOracleAdapter is IOptimisticOracleV3Callbacks, Ownable2Step, Reent
      * @notice Called by UMA when an assertion settles (liveness expired or dispute resolved).
      * If truthful and market not yet resolved: resolves + finalises the market on the CONTROLLER.
      * If not truthful: cleans up, allows re-proposal.
-     * If question was paused or already finalised: just cleans up.
+     * If question was flagged or already finalised: just cleans up.
      * @dev Bond is returned directly to the proposer by UMA — adapter doesn't handle bond returns.
      */
     function assertionResolvedCallback(bytes32 assertionId, bool assertedTruthfully)
@@ -172,9 +174,9 @@ contract FTUmaOracleAdapter is IOptimisticOracleV3Callbacks, Ownable2Step, Reent
         AssertionData memory data = assertions[assertionId];
         if (data.questionId == bytes32(0)) revert UnknownAssertion();
 
-        // resolve the market if truthful, not paused, and not already finalised
-        bool shouldResolve =
-            assertedTruthfully && !pausedQuestions[data.questionId] && !CONTROLLER.isFinalised(data.questionId);
+        // resolve the market if truthful, active, and not already finalised
+        bool shouldResolve = assertedTruthfully && questionState[data.questionId].status == QuestionStatus.ACTIVE
+            && !CONTROLLER.isFinalised(data.questionId);
 
         if (shouldResolve) {
             CONTROLLER.resolveOutcome(data.questionId, data.answer);
@@ -182,7 +184,7 @@ contract FTUmaOracleAdapter is IOptimisticOracleV3Callbacks, Ownable2Step, Reent
             emit QuestionResolved(data.questionId, assertionId, data.answer);
         }
 
-        // clean up — stateless between cycles
+        // still clean up — stateless between cycles, eventhough didn't resolve/finalise
         delete assertions[assertionId];
         // only delete questionToAssertion if it still points to THIS assertion
         // a newer proposal may have replaced it after a dispute
@@ -212,12 +214,14 @@ contract FTUmaOracleAdapter is IOptimisticOracleV3Callbacks, Ownable2Step, Reent
      * Pauses UMA resolution and starts a safety timer. Admin must wait before resolving.
      */
     function flag(bytes32 questionId) external onlyOwner {
-        if (flaggedQuestions[questionId] != 0) revert QuestionAlreadyFlagged();
+        QuestionState storage state = questionState[questionId];
+
+        if (state.flagDeadline != 0) revert QuestionAlreadyFlagged();
 
         if (CONTROLLER.isFinalised(questionId)) revert QuestionAlreadyFinalised();
 
-        flaggedQuestions[questionId] = block.timestamp + SAFETY_PERIOD;
-        pausedQuestions[questionId] = true;
+        state.flagDeadline = uint40(block.timestamp + SAFETY_PERIOD);
+        state.status = QuestionStatus.FLAGGED;
 
         emit QuestionFlagged(questionId);
     }
@@ -226,11 +230,12 @@ contract FTUmaOracleAdapter is IOptimisticOracleV3Callbacks, Ownable2Step, Reent
      * @notice Cancel manual resolution — only before safety period expires.
      */
     function unflag(bytes32 questionId) external onlyOwner {
-        if (flaggedQuestions[questionId] == 0) revert QuestionNotFlagged();
-        if (block.timestamp >= flaggedQuestions[questionId]) revert SafetyPeriodAlreadyPassed();
+        QuestionState storage state = questionState[questionId];
+        if (state.flagDeadline == 0) revert QuestionNotFlagged();
+        if (block.timestamp >= state.flagDeadline) revert SafetyPeriodAlreadyPassed();
 
-        delete flaggedQuestions[questionId];
-        pausedQuestions[questionId] = false;
+        state.flagDeadline = 0;
+        state.status = QuestionStatus.ACTIVE;
 
         emit QuestionUnflagged(questionId);
     }
@@ -242,8 +247,9 @@ contract FTUmaOracleAdapter is IOptimisticOracleV3Callbacks, Ownable2Step, Reent
      * Bond is returned directly to the proposer by UMA regardless of emergency resolve.
      */
     function emergencyResolve(bytes32 questionId, uint256 answer) external onlyOwner nonReentrant {
-        if (flaggedQuestions[questionId] == 0) revert QuestionNotFlagged();
-        if (block.timestamp < flaggedQuestions[questionId]) revert SafetyPeriodNotPassed();
+        QuestionState storage state = questionState[questionId];
+        if (state.flagDeadline == 0) revert QuestionNotFlagged();
+        if (block.timestamp < state.flagDeadline) revert SafetyPeriodNotPassed();
 
         uint256 numOutcomes = CONTROLLER.getNumOutcomes(questionId);
         if (answer == 0 || answer >= (uint256(1) << numOutcomes)) revert InvalidAnswer();
@@ -251,20 +257,10 @@ contract FTUmaOracleAdapter is IOptimisticOracleV3Callbacks, Ownable2Step, Reent
         CONTROLLER.resolveOutcome(questionId, answer);
         CONTROLLER.finaliseOutcome(questionId, answer);
 
-        delete flaggedQuestions[questionId];
-        delete pausedQuestions[questionId];
+        state.flagDeadline = 0;
+        state.status = QuestionStatus.ACTIVE;
 
         emit EmergencyResolved(questionId, answer, msg.sender);
-    }
-
-    function pause(bytes32 questionId) external onlyOwner {
-        pausedQuestions[questionId] = true;
-        emit QuestionPaused(questionId);
-    }
-
-    function unpause(bytes32 questionId) external onlyOwner {
-        pausedQuestions[questionId] = false;
-        emit QuestionUnpaused(questionId);
     }
 
     function setDefaultBond(uint256 newBond) external onlyOwner {
@@ -290,7 +286,7 @@ contract FTUmaOracleAdapter is IOptimisticOracleV3Callbacks, Ownable2Step, Reent
 
         if (questionToAssertion[questionId] != bytes32(0)) revert ProposalAlreadyPending();
 
-        if (pausedQuestions[questionId]) revert QuestionPausedForResolution();
+        if (questionState[questionId].status == QuestionStatus.FLAGGED) revert QuestionFlaggedForResolution();
     }
 
     /// @dev Builds a human-readable claim string for UMA DVM voters to verify during disputes.
@@ -347,13 +343,13 @@ contract FTUmaOracleAdapter is IOptimisticOracleV3Callbacks, Ownable2Step, Reent
     function ready(bytes32 questionId) external view returns (bool) {
         bytes32 assertionId = questionToAssertion[questionId];
         if (assertionId == bytes32(0)) return false;
-        if (pausedQuestions[questionId]) return false;
+        if (questionState[questionId].status != QuestionStatus.ACTIVE) return false;
 
         IOptimisticOracleV3.Assertion memory assertion = ORACLE_V3.getAssertion(assertionId);
         return block.timestamp >= assertion.expirationTime && !assertion.settled;
     }
 
     function isFlagged(bytes32 questionId) external view returns (bool) {
-        return flaggedQuestions[questionId] != 0;
+        return questionState[questionId].flagDeadline != 0;
     }
 }

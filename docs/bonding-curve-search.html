@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bonding Curve — Newton + Binary Search Visualiser</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Courier New', monospace; background: #0d0d0d; color: #e0e0e0; padding: 20px; }
+  h1 { color: #7eb8f7; font-size: 18px; margin-bottom: 4px; }
+  .subtitle { color: #666; font-size: 12px; margin-bottom: 20px; }
+
+  .layout { display: grid; grid-template-columns: 1fr 340px; gap: 20px; }
+
+  canvas { display: block; background: #111; border: 1px solid #222; border-radius: 6px; }
+
+  .panel { display: flex; flex-direction: column; gap: 14px; }
+
+  .card { background: #141414; border: 1px solid #222; border-radius: 6px; padding: 14px; }
+  .card h3 { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; }
+
+  label { font-size: 12px; color: #aaa; display: block; margin-bottom: 4px; }
+  input[type=range] { width: 100%; accent-color: #7eb8f7; margin-bottom: 8px; }
+  .val { color: #7eb8f7; font-size: 12px; float: right; }
+
+  .btn-row { display: flex; gap: 8px; margin-top: 4px; }
+  button {
+    flex: 1; padding: 8px; border: none; border-radius: 4px;
+    font-family: 'Courier New', monospace; font-size: 12px; cursor: pointer;
+    transition: opacity 0.15s;
+  }
+  button:hover { opacity: 0.85; }
+  #btnStep  { background: #2a5c8a; color: #fff; }
+  #btnRun   { background: #1a6b3a; color: #fff; }
+  #btnReset { background: #2a2a2a; color: #aaa; border: 1px solid #333; }
+
+  .log { font-size: 11px; line-height: 1.7; max-height: 260px; overflow-y: auto; }
+  .log-entry { padding: 2px 0; border-bottom: 1px solid #1a1a1a; }
+  .phase1  { color: #f0a040; }
+  .phase2  { color: #7eb8f7; }
+  .found   { color: #5cdb95; font-weight: bold; }
+  .label   { color: #666; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 4px; vertical-align: middle; }
+
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .stat { background: #0d0d0d; border-radius: 4px; padding: 8px; }
+  .stat-label { font-size: 10px; color: #555; }
+  .stat-val { font-size: 14px; color: #e0e0e0; margin-top: 2px; }
+  .stat-val.green { color: #5cdb95; }
+  .stat-val.orange { color: #f0a040; }
+  .stat-val.blue { color: #7eb8f7; }
+</style>
+</head>
+<body>
+
+<h1>Bonding Curve — Newton Refinement + Binary Search</h1>
+<p class="subtitle">cost(x) = x^(c1+1) / c2 &nbsp;|&nbsp; Given collateral target, find otDelta</p>
+
+<div class="layout">
+  <canvas id="cv" width="720" height="500"></canvas>
+
+  <div class="panel">
+
+    <div class="card">
+      <h3>Parameters</h3>
+      <label>Collateral Target <span class="val" id="vTarget"></span></label>
+      <input type="range" id="target" min="10" max="400" value="150" step="1">
+
+      <label>OT Supply (current position) <span class="val" id="vSupply"></span></label>
+      <input type="range" id="supply" min="0" max="60" value="20" step="1">
+
+      <label>Tick size <span class="val" id="vTick"></span></label>
+      <input type="range" id="tick" min="1" max="10" value="3" step="1">
+
+      <label>Epsilon (tolerance) <span class="val" id="vEps"></span></label>
+      <input type="range" id="eps" min="1" max="20" value="5" step="1">
+    </div>
+
+    <div class="card">
+      <h3>Controls</h3>
+      <div class="btn-row">
+        <button id="btnStep">Step →</button>
+        <button id="btnRun">Run All</button>
+        <button id="btnReset">Reset</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Stats</h3>
+      <div class="stats">
+        <div class="stat">
+          <div class="stat-label">Phase</div>
+          <div class="stat-val orange" id="stPhase">—</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Iterations</div>
+          <div class="stat-val blue" id="stIter">0</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">tickCurr</div>
+          <div class="stat-val" id="stTick">—</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Cost at guess</div>
+          <div class="stat-val" id="stCost">—</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Bounds [min, max]</div>
+          <div class="stat-val green" id="stBounds" style="grid-column:span 2">—</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Legend</h3>
+      <div class="legend">
+        <div><span class="dot" style="background:#444"></span>Curve</div>
+        <div><span class="dot" style="background:#e05c5c"></span>Target</div>
+        <div><span class="dot" style="background:#f0a040"></span>Phase 1 (Newton)</div>
+        <div><span class="dot" style="background:#7eb8f7"></span>Phase 2 (Binary)</div>
+        <div><span class="dot" style="background:#5cdb95"></span>Found</div>
+        <div><span class="dot" style="background:#9b59b6"></span>OT Supply</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Log</h3>
+      <div class="log" id="log"></div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+
+// --- Curve math (mirrors PowerMath.sol) ---
+const C1 = 1.5;   // exponent param
+const C2 = 800;   // scale param
+const START = 5;  // offset (prevents zero cost)
+
+function cost(x) {
+  return Math.pow(x + START, C1 + 1) / C2;
+}
+
+function marginalPrice(x) {
+  return (C1 + 1) * Math.pow(x + START, C1) / C2;
+}
+
+function calSwap(otSupply, otDelta, feeRate = 0.02) {
+  const from = cost(otSupply);
+  const to   = cost(otSupply + otDelta);
+  const raw  = Math.max(to - from, 0.001);
+  const fee  = raw * feeRate;
+  return raw + fee; // collateralFromUser
+}
+
+// --- State ---
+let state = {};
+
+function getParams() {
+  return {
+    target : +document.getElementById('target').value,
+    supply : +document.getElementById('supply').value,
+    tick   : +document.getElementById('tick').value,
+    eps    : +document.getElementById('eps').value / 100,
+  };
+}
+
+function reset() {
+  const p = getParams();
+  state = {
+    phase     : 1,
+    iter      : 0,
+    tickCurr  : 0,
+    tickMin   : 0,
+    tickMax   : 0,
+    done      : false,
+    found     : false,
+    history   : [],   // {phase, tickCurr, cost, type}
+    tangents  : [],   // {x, slope, intercept} for drawing
+    ...p,
+  };
+
+  // Initial guess: use marginal price estimate
+  const price = marginalPrice(p.supply);
+  state.tickCurr = Math.max(1, Math.floor((p.target / price) / p.tick));
+
+  logClear();
+  logAdd('label', `Supply=${p.supply}  Target=${p.target.toFixed(1)}  Tick=${p.tick}`);
+  logAdd('label', `Initial tickCurr=${state.tickCurr} (from marginalPrice=${price.toFixed(3)})`);
+  updateStats();
+  draw();
+}
+
+// --- Step logic ---
+function step() {
+  if (state.done) return;
+  const { tick, target, supply, eps } = state;
+
+  if (state.phase === 1) {
+    stepNewton();
+  } else {
+    stepBinary();
+  }
+  updateStats();
+  draw();
+}
+
+function stepNewton() {
+  const { tick, target, supply, eps } = state;
+  state.iter++;
+
+  const otDelta = state.tickCurr * tick;
+  const c = calSwap(supply, otDelta);
+  const price = marginalPrice(supply + otDelta);
+
+  state.history.push({ phase: 1, tickCurr: state.tickCurr, cost: c });
+
+  // Store tangent line for visualisation
+  // tangent: costAtGuess + price * (otDelta' - otDelta) = target
+  // → otDelta' = otDelta + (target - c) / price
+  state.tangents.push({ otAt: supply + otDelta, cost: c, price, target });
+
+  const diff = Math.abs(c - target);
+  if (diff / target <= eps) {
+    logAdd('found', `[P1 iter ${state.iter}] FOUND tickCurr=${state.tickCurr} cost=${c.toFixed(2)} ≈ target=${target}`);
+    state.done = true; state.found = true; return;
+  }
+
+  if (c > target) {
+    state.tickMax = state.tickCurr;
+    logAdd('phase1', `[P1 iter ${state.iter}] OVER  tickCurr=${state.tickCurr} cost=${c.toFixed(2)} > ${target} → set max=${state.tickMax}`);
+    if (state.tickCurr === 1) { logAdd('found', 'No solution: target < 1 tick'); state.done = true; return; }
+    if (state.tickMin > 0) { logAdd('phase1', '→ Both bounds set. Switch to Phase 2 (binary search)'); state.phase = 2; return; }
+    const step = Math.max(1, Math.round((c - target) / price / tick));
+    state.tickCurr = Math.max(1, state.tickCurr - step);
+    logAdd('phase1', `  Newton step DOWN by ${step} ticks → tickCurr=${state.tickCurr}`);
+  } else {
+    state.tickMin = state.tickCurr;
+    logAdd('phase1', `[P1 iter ${state.iter}] UNDER tickCurr=${state.tickCurr} cost=${c.toFixed(2)} < ${target} → set min=${state.tickMin}`);
+    if (state.tickMax > 0) { logAdd('phase1', '→ Both bounds set. Switch to Phase 2 (binary search)'); state.phase = 2; return; }
+    const step = Math.max(1, Math.round((target - c) / price / tick));
+    state.tickCurr += step;
+    logAdd('phase1', `  Newton step UP by ${step} ticks → tickCurr=${state.tickCurr}`);
+  }
+}
+
+function stepBinary() {
+  const { tick, target, supply, eps } = state;
+  state.iter++;
+
+  const mid = Math.floor((state.tickMin + state.tickMax + 1) / 2);
+  const otDelta = mid * tick;
+  const c = calSwap(supply, otDelta);
+
+  state.history.push({ phase: 2, tickCurr: mid, cost: c });
+
+  const diff = Math.abs(c - target);
+  if (diff / target <= eps) {
+    logAdd('found', `[P2 iter ${state.iter}] FOUND tickCurr=${mid} cost=${c.toFixed(2)} ≈ target=${target}`);
+    state.tickCurr = mid;
+    state.done = true; state.found = true; return;
+  }
+
+  if (c <= target) {
+    logAdd('phase2', `[P2 iter ${state.iter}] mid=${mid} cost=${c.toFixed(2)} < ${target} → min=${mid}`);
+    if (mid === state.tickMin) { logAdd('found', 'Converged — no closer tick'); state.tickCurr = mid; state.done = true; return; }
+    state.tickMin = mid;
+  } else {
+    logAdd('phase2', `[P2 iter ${state.iter}] mid=${mid} cost=${c.toFixed(2)} > ${target} → max=${mid}`);
+    if (mid === state.tickMax) { logAdd('found', 'Converged — no closer tick'); state.tickCurr = mid; state.done = true; return; }
+    state.tickMax = mid;
+  }
+  state.tickCurr = mid;
+}
+
+function runAll() {
+  for (let i = 0; i < 50 && !state.done; i++) step();
+}
+
+// --- Drawing ---
+const PAD = { l: 60, r: 20, t: 20, b: 50 };
+
+function toCanvas(otX, costY, maxOt, maxCost) {
+  const W = cv.width - PAD.l - PAD.r;
+  const H = cv.height - PAD.t - PAD.b;
+  const x = PAD.l + (otX / maxOt) * W;
+  const y = PAD.t + H - (costY / maxCost) * H;
+  return [x, y];
+}
+
+function draw() {
+  const p = getParams();
+  const maxOt   = Math.max(100, (p.supply + 80));
+  const maxCost = cost(maxOt) * 1.15;
+
+  ctx.clearRect(0, 0, cv.width, cv.height);
+
+  const W = cv.width - PAD.l - PAD.r;
+  const H = cv.height - PAD.t - PAD.b;
+
+  // Grid
+  ctx.strokeStyle = '#1a1a1a';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 5; i++) {
+    const y = PAD.t + (H / 5) * i;
+    ctx.beginPath(); ctx.moveTo(PAD.l, y); ctx.lineTo(PAD.l + W, y); ctx.stroke();
+    const x = PAD.l + (W / 5) * i;
+    ctx.beginPath(); ctx.moveTo(x, PAD.t); ctx.lineTo(x, PAD.t + H); ctx.stroke();
+  }
+
+  // Axes labels
+  ctx.fillStyle = '#444'; ctx.font = '11px Courier New'; ctx.textAlign = 'right';
+  for (let i = 0; i <= 5; i++) {
+    const val = (maxCost / 5 * (5 - i)).toFixed(0);
+    const y = PAD.t + (H / 5) * i;
+    ctx.fillText(val, PAD.l - 6, y + 4);
+  }
+  ctx.textAlign = 'center';
+  for (let i = 0; i <= 5; i++) {
+    const val = (maxOt / 5 * i).toFixed(0);
+    const x = PAD.l + (W / 5) * i;
+    ctx.fillText(val, x, PAD.t + H + 18);
+  }
+  ctx.fillStyle = '#555'; ctx.font = '11px Courier New';
+  ctx.fillText('OT Supply', PAD.l + W / 2, cv.height - 6);
+  ctx.save(); ctx.translate(14, PAD.t + H / 2); ctx.rotate(-Math.PI/2);
+  ctx.fillText('Cost', 0, 0); ctx.restore();
+
+  // Bonding curve
+  ctx.beginPath(); ctx.strokeStyle = '#333'; ctx.lineWidth = 2;
+  for (let ot = 0; ot <= maxOt; ot += 0.5) {
+    const [x, y] = toCanvas(ot, cost(ot), maxOt, maxCost);
+    ot === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // Shaded area between supply and answer
+  if (state.history && state.history.length > 0) {
+    const last = state.history[state.history.length - 1];
+    const otDeltaFinal = last.tickCurr * state.tick;
+    ctx.beginPath();
+    ctx.fillStyle = 'rgba(94, 219, 149, 0.07)';
+    const [x0] = toCanvas(state.supply, 0, maxOt, maxCost);
+    const [x1] = toCanvas(state.supply + otDeltaFinal, 0, maxOt, maxCost);
+    ctx.moveTo(x0, PAD.t + H);
+    for (let ot = state.supply; ot <= state.supply + otDeltaFinal; ot += 0.5) {
+      const [x, y] = toCanvas(ot, cost(ot), maxOt, maxCost);
+      ctx.lineTo(x, y);
+    }
+    ctx.lineTo(x1, PAD.t + H);
+    ctx.closePath(); ctx.fill();
+  }
+
+  // Target horizontal line
+  const [, ty] = toCanvas(0, p.target, maxOt, maxCost);
+  ctx.beginPath(); ctx.strokeStyle = '#e05c5c'; ctx.lineWidth = 1;
+  ctx.setLineDash([6, 4]);
+  ctx.moveTo(PAD.l, ty); ctx.lineTo(PAD.l + W, ty); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = '#e05c5c'; ctx.font = '11px Courier New'; ctx.textAlign = 'left';
+  ctx.fillText(`target=${p.target}`, PAD.l + 4, ty - 5);
+
+  // OT Supply vertical line
+  const [sx] = toCanvas(p.supply, 0, maxOt, maxCost);
+  ctx.beginPath(); ctx.strokeStyle = '#9b59b6'; ctx.lineWidth = 1;
+  ctx.setLineDash([4, 4]);
+  ctx.moveTo(sx, PAD.t); ctx.lineTo(sx, PAD.t + H); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = '#9b59b6'; ctx.textAlign = 'center';
+  ctx.fillText(`supply=${p.supply}`, sx, PAD.t + H + 34);
+
+  // Tangent lines (Newton steps)
+  if (state.tangents) {
+    state.tangents.forEach((t, i) => {
+      // draw tangent: y = t.cost + t.price * (x - t.otAt)
+      // find where it crosses target: x = t.otAt + (target - t.cost) / t.price
+      const otCross = t.otAt + (t.target - t.cost) / t.price;
+      const [x1, y1] = toCanvas(t.otAt - 8, t.cost - 8 * t.price, maxOt, maxCost);
+      const [x2, y2] = toCanvas(otCross + 5, t.target + 5 * t.price, maxOt, maxCost);
+      ctx.beginPath();
+      ctx.strokeStyle = `rgba(240, 160, 64, ${0.3 + 0.7 * (i + 1) / state.tangents.length})`;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+      ctx.setLineDash([]);
+    });
+  }
+
+  // History dots
+  if (state.history) {
+    state.history.forEach((h, i) => {
+      const otPos = p.supply + h.tickCurr * p.tick;
+      const [x, y] = toCanvas(otPos, h.cost, maxOt, maxCost);
+      const isLast = i === state.history.length - 1;
+      const color = state.found && isLast ? '#5cdb95'
+                  : h.phase === 1 ? '#f0a040' : '#7eb8f7';
+      ctx.beginPath();
+      ctx.arc(x, y, isLast ? 7 : 4, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+      if (isLast) {
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
+      }
+      // vertical drop line
+      const [, by] = toCanvas(otPos, 0, maxOt, maxCost);
+      ctx.beginPath();
+      ctx.strokeStyle = color + '44'; ctx.lineWidth = 1;
+      ctx.setLineDash([2, 3]);
+      ctx.moveTo(x, y); ctx.lineTo(x, by); ctx.stroke();
+      ctx.setLineDash([]);
+      // label
+      ctx.fillStyle = color; ctx.font = '10px Courier New'; ctx.textAlign = 'center';
+      ctx.fillText(`${h.phase===1?'N':'B'}${i+1}`, x, y - 10);
+    });
+  }
+
+  // Bounds shading
+  if (state.tickMin > 0 && state.tickMax > 0) {
+    const [bx1] = toCanvas(p.supply + state.tickMin * p.tick, 0, maxOt, maxCost);
+    const [bx2] = toCanvas(p.supply + state.tickMax * p.tick, 0, maxOt, maxCost);
+    ctx.fillStyle = 'rgba(126, 184, 247, 0.06)';
+    ctx.fillRect(bx1, PAD.t, bx2 - bx1, H);
+    ctx.strokeStyle = '#7eb8f744'; ctx.lineWidth = 1;
+    ctx.strokeRect(bx1, PAD.t, bx2 - bx1, H);
+  }
+}
+
+// --- Log ---
+function logAdd(cls, msg) {
+  const log = document.getElementById('log');
+  const el = document.createElement('div');
+  el.className = `log-entry ${cls}`;
+  el.textContent = msg;
+  log.appendChild(el);
+  log.scrollTop = log.scrollHeight;
+}
+function logClear() { document.getElementById('log').innerHTML = ''; }
+
+function updateStats() {
+  document.getElementById('stPhase').textContent = state.done ? (state.found ? 'Found ✓' : 'No solution') : `Phase ${state.phase}`;
+  document.getElementById('stIter').textContent  = state.iter;
+  document.getElementById('stTick').textContent  = state.tickCurr;
+  const c = state.tickCurr > 0 ? calSwap(state.supply, state.tickCurr * state.tick).toFixed(2) : '—';
+  document.getElementById('stCost').textContent  = c;
+  const bounds = state.tickMin > 0 || state.tickMax > 0
+    ? `[${state.tickMin}, ${state.tickMax === 0 ? '?' : state.tickMax}]` : '—';
+  document.getElementById('stBounds').textContent = bounds;
+}
+
+function updateLabels() {
+  const p = getParams();
+  document.getElementById('vTarget').textContent = p.target;
+  document.getElementById('vSupply').textContent = p.supply;
+  document.getElementById('vTick').textContent   = p.tick;
+  document.getElementById('vEps').textContent    = (p.eps * 100).toFixed(0) + '%';
+}
+
+// --- Wire up ---
+['target','supply','tick','eps'].forEach(id => {
+  document.getElementById(id).addEventListener('input', () => { updateLabels(); reset(); });
+});
+document.getElementById('btnStep').addEventListener('click', step);
+document.getElementById('btnRun').addEventListener('click', runAll);
+document.getElementById('btnReset').addEventListener('click', reset);
+
+updateLabels();
+reset();
+</script>
+</body>
+</html>

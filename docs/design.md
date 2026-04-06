@@ -62,7 +62,7 @@ V3 was designed for exactly this use case — "the outcome is known, someone pro
 
 ## Roles and Access Control
 
-### Owner (Ownable)
+### Owner (Ownable2Step)
 
 The adapter uses OpenZeppelin's `Ownable` for admin functions. The owner is set to `msg.sender` in the constructor and can be transferred via `transferOwnership()`.
 
