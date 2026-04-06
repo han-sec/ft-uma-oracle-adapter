@@ -164,7 +164,7 @@ contract FTUmaOracleAdapterTest is Test {
 
         // Can't propose while flagged
         vm.prank(proposer);
-        vm.expectRevert(FTUmaOracleAdapter.QuestionPausedForResolution.selector);
+        vm.expectRevert(FTUmaOracleAdapter.QuestionFlaggedForResolution.selector);
         adapter.proposeAnswer(questionId, ANSWER_YES);
 
         // Can't emergency resolve before safety period
@@ -506,7 +506,7 @@ contract FTUmaOracleAdapterTest is Test {
         adapter.proposeAnswer(questionId, ANSWER_YES);
 
         vm.prank(admin);
-        adapter.pause(questionId);
+        adapter.flag(questionId);
 
         assertFalse(adapter.ready(questionId));
     }
