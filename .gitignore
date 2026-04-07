@@ -9,10 +9,3 @@ out/
 
 # Dotenv file
 .env
-
-# Claude sync (research, audit findings, interview prep — not for git)
-.claude/
-CLAUDE.md
-
-# Interview prep (personal study material)
-interview-prep.md
